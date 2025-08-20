@@ -34,11 +34,11 @@ jobs:
       - name: Install project deps (pinned + constraints)
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          pip install --no-cache-dir -r requirements.txt -c constraints.txt
+          python -m pip install --no-cache-dir -r requirements.txt -c constraints.txt
 
       - name: Install test deps (compatible with Locust 1.6 stack)
         run: |
-          pip install \
+          python -m pip install \
             "coverage==5.5" \
             "pytest==6.2.5" \
             "pytest-cov==2.12.1" \
@@ -46,7 +46,19 @@ jobs:
             "locust==1.6.*" \
             "flask==1.1.2" "jinja2==2.11.3" "werkzeug==1.0.1" "itsdangerous==1.1.0" "click==7.1.2" "markupsafe<2.1"
 
-      - name: Run unit tests (model & api)
+      - name: Show versions (debug helper)
         run: |
-          pytest -q tests/model/test_model.py tests/api/test_api.py
+          python --version
+          python -m pip freeze | sed -n '1,120p'
 
+      - name: Verify dataset
+        run: |
+          ls -lah data || true
+          test -f data/data.csv && echo "data.csv OK" || (echo "Falta data/data.csv"; exit 1)
+
+      - name: Run unit tests (model & api)
+        working-directory: tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python -m pytest -q model/test_model.py api/test_api.py
