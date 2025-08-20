@@ -1,0 +1,85 @@
+name: CD — Build & Deploy to Cloud Run
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'challenge/**'
+      - 'Dockerfile'
+      - 'requirements.txt'
+      - 'constraints.txt'
+      - '.github/workflows/cd.yml'
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  GCP_PROJECT_ID: continual-lodge-399604
+  GCP_REGION: southamerica-west1
+  ARTIFACT_REPO: ml-repo
+  SERVICE_NAME: flight-delay-api
+  IMAGE_NAME: flight-delay-api
+  PORT: '8080'
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud (Workload Identity Federation)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.SERVICE_ACCOUNT_EMAIL }}
+          token_format: 'access_token'
+
+      - name: Set up gcloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          install_components: 'alpha,beta'
+
+      - name: Configure gcloud default project & region
+        run: |
+          gcloud config set project "${GCP_PROJECT_ID}"
+          gcloud config set run/region "${GCP_REGION}"
+          gcloud config set artifacts/location "${GCP_REGION}"
+
+      - name: Enable required APIs (no-op if already enabled)
+        run: |
+          gcloud services enable artifactregistry.googleapis.com run.googleapis.com cloudbuild.googleapis.com
+
+      - name: Build & Push container via Cloud Build
+        env:
+          IMAGE_REF: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+        run: |
+          echo "Building ${IMAGE_REF}..."
+          gcloud builds submit --tag "${IMAGE_REF}" .
+
+      - name: Deploy to Cloud Run (managed)
+        env:
+          IMAGE_REF: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+        run: |
+          gcloud run deploy "${SERVICE_NAME}" \
+            --image "${IMAGE_REF}" \
+            --platform managed \
+            --region "${GCP_REGION}" \
+            --allow-unauthenticated \
+            --port "${PORT}" \
+            --cpu 2 --memory 1Gi \
+            --concurrency 8 \
+            --min-instances 1
+
+      - name: Output service URL
+        id: service-url
+        run: |
+          URL="$(gcloud run services describe "${SERVICE_NAME}" --region "${GCP_REGION}" --format='value(status.url)')"
+          echo "url=${URL}" >> $GITHUB_OUTPUT
+
+      - name: Post deploy summary
+        run: |
+          echo "Deployed ${{ env.SERVICE_NAME }} to:"
+          echo "${{ steps.service-url.outputs.url }}"

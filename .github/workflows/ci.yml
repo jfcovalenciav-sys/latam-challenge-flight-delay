@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install system deps (OpenMP for sklearn)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgomp1
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt', '**/constraints.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install project deps (pinned + constraints)
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install --no-cache-dir -r requirements.txt -c constraints.txt
+
+      - name: Install test deps (compatible with Locust 1.6 stack)
+        run: |
+          pip install \
+            "coverage==5.5" \
+            "pytest==6.2.5" \
+            "pytest-cov==2.12.1" \
+            "mockito==1.2.2" \
+            "locust==1.6.*" \
+            "flask==1.1.2" "jinja2==2.11.3" "werkzeug==1.0.1" "itsdangerous==1.1.0" "click==7.1.2" "markupsafe<2.1"
+
+      - name: Run unit tests (model & api)
+        run: |
+          pytest -q tests/model/test_model.py tests/api/test_api.py
+
