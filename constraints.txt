@@ -1,0 +1,4 @@
+starlette<0.21
+anyio==3.7.1
+httpx<0.24
+scipy==1.10.1
