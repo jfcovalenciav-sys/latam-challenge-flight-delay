@@ -7,7 +7,7 @@ import pandas as pd
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, validator
 from starlette.status import HTTP_400_BAD_REQUEST
 
 from challenge.model import DelayModel
@@ -37,14 +37,14 @@ class Flight(BaseModel):
     TIPOVUELO: str
     MES: int
 
-    @field_validator("TIPOVUELO")
+    @validator("TIPOVUELO")
     @classmethod
     def _tipo_ok(cls, v: str) -> str:
         if v not in {"I", "N"}:
             raise ValueError("TIPOVUELO must be 'I' or 'N'")
         return v
 
-    @field_validator("MES")
+    @validator("MES")
     @classmethod
     def _mes_ok(cls, v: int) -> int:
         if not (1 <= v <= 12):
