@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+.git/
+.gitignore
+tests/
+notebooks/
+*.ipynb_checkpoints/
+dist/
+build/
