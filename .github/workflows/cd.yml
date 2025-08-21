@@ -26,9 +26,20 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # Evita ejecutarse en PRs (donde secrets pueden no estar disponibles)
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # Pre-check de secrets WIF (mensaje claro si faltan)
+      - name: Validate WIF secrets
+        run: |
+          if [ -z "${{ secrets.WORKLOAD_IDENTITY_PROVIDER }}" ]; then
+            echo "::error::Missing secret WORKLOAD_IDENTITY_PROVIDER"; exit 1; fi
+          if [ -z "${{ secrets.SERVICE_ACCOUNT_EMAIL }}" ]; then
+            echo "::error::Missing secret SERVICE_ACCOUNT_EMAIL"; exit 1; fi
+          echo "WIF secrets present."
 
       - name: Authenticate to Google Cloud (Workload Identity Federation)
         uses: google-github-actions/auth@v2
@@ -83,3 +94,87 @@ jobs:
         run: |
           echo "Deployed ${{ env.SERVICE_NAME }} to:"
           echo "${{ steps.service-url.outputs.url }}"
+
+  stress:
+    name: Post-deploy stress test (Locust)
+    runs-on: ubuntu-latest
+    needs: deploy
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    env:
+      STRESS_USERS: '100'
+      STRESS_SPAWN: '20'
+      STRESS_DURATION: '60s'
+      P95_BUDGET_MS: '8000'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud (Workload Identity Federation)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.SERVICE_ACCOUNT_EMAIL }}
+          token_format: 'access_token'
+
+      - name: Resolve Cloud Run URL
+        id: run-url
+        run: |
+          URL="$(gcloud run services describe "${{ env.SERVICE_NAME }}" --region "${{ env.GCP_REGION }}" --format='value(status.url)')"
+          if [ -z "$URL" ]; then echo "No se pudo obtener la URL del servicio"; exit 1; fi
+          echo "url=$URL" >> $GITHUB_OUTPUT
+          echo "Service URL: $URL"
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Locust (1.6) + compat pins
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            "locust==1.6.*" \
+            "flask==1.1.2" "jinja2==2.11.3" "werkzeug==1.0.1" "itsdangerous==1.1.0" "click==7.1.2" "markupsafe<2.1"
+
+      - name: Run Locust headless against Cloud Run
+        run: |
+          locust -f tests/stress/api_stress.py \
+            --headless -u "${STRESS_USERS}" -r "${STRESS_SPAWN}" -t "${STRESS_DURATION}" \
+            --host "${{ steps.run-url.outputs.url }}" \
+            --csv=out --csv-full-history
+
+      - name: Enforce SLA (p95 and failures)
+        env:
+          P95_BUDGET_MS: ${{ env.P95_BUDGET_MS }}
+        run: |
+          python - <<'PY'
+          import csv, sys, os
+          p95_budget = int(os.environ.get("P95_BUDGET_MS","8000"))
+          def read_last_p95(path):
+              with open(path, newline='') as f:
+                  r = csv.DictReader(f); last=None
+                  for row in r:
+                      name = (row.get('Name') or row.get(' name') or row.get('NAME') or '').strip()
+                      if name == 'Aggregated': last = row
+                  if not last: print("No 'Aggregated' rows", file=sys.stderr); sys.exit(2)
+                  p95_key = next((k for k in last.keys() if k.strip().startswith('95')), '95%')
+                  try: return float(last[p95_key])
+                  except: print(f"Bad p95 value: {last.get(p95_key)!r}", file=sys.stderr); sys.exit(2)
+          def read_failures(path):
+              with open(path, newline='') as f:
+                  r = csv.DictReader(f)
+                  for row in r:
+                      name = (row.get('Name') or row.get(' name') or row.get('NAME') or '').strip()
+                      if name == 'Aggregated':
+                          for key in ('Failure Count','Fail Count','Failures','# fails','#failures'):
+                              if key in row:
+                                  try: return int(float(row[key]))
+                                  except: pass
+                          return 0
+              return 0
+          p95 = read_last_p95('out_stats_history.csv')
+          fails = read_failures('out_stats.csv')
+          print(f"p95={p95} ms (budget {p95_budget} ms), failures={fails}")
+          bad = (p95 > p95_budget) or (fails > 0)
+          sys.exit(1 if bad else 0)
+          PY
