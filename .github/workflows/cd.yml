@@ -59,10 +59,6 @@ jobs:
           gcloud config set run/region "${GCP_REGION}"
           gcloud config set artifacts/location "${GCP_REGION}"
 
-      - name: Enable required APIs (no-op if already enabled)
-        run: |
-          gcloud services enable artifactregistry.googleapis.com run.googleapis.com cloudbuild.googleapis.com
-
       - name: Build & Push container via Cloud Build
         env:
           IMAGE_REF: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
