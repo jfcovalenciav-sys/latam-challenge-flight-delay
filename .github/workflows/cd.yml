@@ -26,13 +26,11 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    # Evita ejecutarse en PRs (donde secrets pueden no estar disponibles)
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Pre-check de secrets WIF (mensaje claro si faltan)
       - name: Validate WIF secrets
         run: |
           if [ -z "${{ secrets.WORKLOAD_IDENTITY_PROVIDER }}" ]; then
@@ -59,12 +57,17 @@ jobs:
           gcloud config set run/region "${GCP_REGION}"
           gcloud config set artifacts/location "${GCP_REGION}"
 
-      - name: Build & Push container via Cloud Build
+      # 🔽 Nuevo: build local y push a Artifact Registry
+      - name: Auth docker to Artifact Registry
+        run: |
+          gcloud auth configure-docker ${GCP_REGION}-docker.pkg.dev -q
+
+      - name: Build & Push (local Docker)
         env:
           IMAGE_REF: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
         run: |
-          echo "Building ${IMAGE_REF}..."
-          gcloud builds submit --tag "${IMAGE_REF}" .
+          docker build -t "${IMAGE_REF}" .
+          docker push "${IMAGE_REF}"
 
       - name: Deploy to Cloud Run (managed)
         env:
